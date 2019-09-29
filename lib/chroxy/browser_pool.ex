@@ -7,7 +7,7 @@ defmodule Chroxy.BrowserPool do
   Responisble for initialisation of the pool of browsers when
   the app starts.
   """
-  use GenServer
+  use DynamicSupervisor
 
   require Logger
 
@@ -19,7 +19,7 @@ defmodule Chroxy.BrowserPool do
       start: {__MODULE__, :start_link, []},
       restart: :transient,
       shutdown: 5000,
-      type: :worker
+      type: :supervisor
     }
   end
 
@@ -29,7 +29,7 @@ defmodule Chroxy.BrowserPool do
   be initialised.
   """
   def start_link() do
-    GenServer.start_link(__MODULE__, [], name: __MODULE__)
+    DynamicSupervisor.start_link(__MODULE__, [], name: __MODULE__)
   end
 
   ##
@@ -39,7 +39,13 @@ defmodule Chroxy.BrowserPool do
   Request new page websocket url.
   """
   def connection(browser) when is_supported(browser) do
-    GenServer.call(__MODULE__, {:connection, browser}, 60_000)
+    {:ok, pid} =
+      DynamicSupervisor.start_child(
+        __MODULE__,
+        {Chroxy.BrowserPool.BrowserConnection, :ok}
+      )
+
+    GenServer.call(pid, {:connection, browser}, 60_000)
   end
 
   ##
@@ -49,14 +55,9 @@ defmodule Chroxy.BrowserPool do
   def init(args) do
     Logger.warn("ARGS: #{inspect(args)}")
     Process.flag(:trap_exit, true)
-    {:ok, chrome_pool} = Chroxy.BrowserPool.Chrome.start_link()
-    {:ok, %{chrome_pool: chrome_pool}}
-  end
+    Chroxy.BrowserPool.Chrome.start_link()
 
-  @doc false
-  def handle_call({:connection, :chrome}, _from, state) do
-    connection = Chroxy.BrowserPool.Chrome.get_connection()
-    {:reply, connection, state}
+    DynamicSupervisor.init(strategy: :one_for_one)
   end
 
   @doc false

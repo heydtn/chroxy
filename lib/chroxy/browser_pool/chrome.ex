@@ -9,7 +9,20 @@ defmodule Chroxy.BrowserPool.Chrome do
   end
 
   def start_browser(port) do
-    GenServer.cast(__MODULE__, {:start_chrome, port})
+    {:ok, chrome} = Chroxy.ChromeServer.Supervisor.start_child(chrome_port: port)
+
+    # Wait for chrome to init and enter a ready state for connections...
+    case Chroxy.ChromeServer.ready(chrome) do
+      :ready ->
+        # when ready close the pages which are opened by default
+        :ok = Chroxy.ChromeServer.close_all_pages(chrome)
+
+      :timeout ->
+        # failed to become ready in an acceptable timeframe
+        Logger.error("Failed to start chrome on port #{port}")
+    end
+
+    :ok
   end
 
   @doc """
@@ -36,36 +49,29 @@ defmodule Chroxy.BrowserPool.Chrome do
   end
 
   def get_connection(chrome) do
-    GenServer.call(__MODULE__, {:get_connection, chrome})
+    {:ok, pid} = Chroxy.ChromeProxy.start_link(chrome: chrome)
+    Chroxy.ChromeProxy.chrome_connection(pid)
   end
 
   # Callbacks
 
   def init([]) do
     opts = Application.get_all_env(:chroxy)
-    chrome_port_from = Keyword.get(opts, :chrome_remote_debug_port_from) |> String.to_integer()
-    chrome_port_to = Keyword.get(opts, :chrome_remote_debug_port_to) |> String.to_integer()
+
+    chrome_port_from =
+      Keyword.get(opts, :chrome_remote_debug_port_from)
+      |> String.to_integer()
+
+    chrome_port_to =
+      Keyword.get(opts, :chrome_remote_debug_port_to)
+      |> String.to_integer()
+
     ports = Range.new(chrome_port_from, chrome_port_to)
-    Enum.map(ports, &start_browser(&1))
+
+    Task.async_stream(ports, &start_browser(&1))
+    |> Stream.run()
+
     {:ok, %{browsers: [], access_count: 0}}
-  end
-
-  @doc false
-  def handle_cast({:start_chrome, port}, state) do
-    {:ok, chrome} = Chroxy.ChromeServer.Supervisor.start_child(chrome_port: port)
-
-    # Wait for chrome to init and enter a ready state for connections...
-    case Chroxy.ChromeServer.ready(chrome) do
-      :ready ->
-        # when ready close the pages which are openned by default
-        :ok = Chroxy.ChromeServer.close_all_pages(chrome)
-
-      :timeout ->
-        # failed to become ready in an acceptable timeframe
-        Logger.error("Failed to start chrome on port #{port}")
-    end
-
-    {:noreply, state}
   end
 
   @doc false
@@ -73,13 +79,6 @@ defmodule Chroxy.BrowserPool.Chrome do
     browsers = pool()
     idx = Integer.mod(access_count, Enum.count(browsers))
     {:reply, Enum.at(browsers, idx), %{state | access_count: access_count + 1}}
-  end
-
-  @doc false
-  def handle_call({:get_connection, chrome}, _from, state) do
-    {:ok, pid} = Chroxy.ChromeProxy.start_link(chrome: chrome)
-    url = Chroxy.ChromeProxy.chrome_connection(pid)
-    {:reply, url, state}
   end
 
   @doc """
